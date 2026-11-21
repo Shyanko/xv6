@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -322,7 +324,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -331,13 +332,18 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    if(flags & PTE_W)
+    {
+        flags ^= PTE_W;
+        flags |= PTE_COW;
+        *pte = PA2PTE(pa) | flags;
     }
+    if(mappages(new, i, PGSIZE, pa, flags) != 0)
+      goto err;
+    modify_refs(pa, 1);
   }
   return 0;
 
@@ -359,6 +365,39 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+int check_cow(uint64 va, pagetable_t pagetable)
+{
+    pte_t *pte = 0;
+    if(va >= MAXVA)
+      return -1;
+    pte = walk(pagetable, va, 0);
+    if(pte == 0 || (*pte & (PTE_V | PTE_U)) != (PTE_V | PTE_U))
+      return -1;
+    if((*pte & PTE_COW) != PTE_COW)
+      return (*pte & PTE_W) ? 1 : -1;
+    uint64 pa = PTE2PA(*pte);
+    uint64 flags = PTE_FLAGS(*pte);
+    flags = (flags | PTE_W) & ~PTE_COW;
+    
+    if(modify_refs(pa, 0) == 1)
+    {
+      *pte = PA2PTE(pa) | flags;
+      sfence_vma();
+    }
+    else
+    {
+      char *mem = kalloc();
+      if(mem == 0)
+        return -1;
+      memmove(mem, (char *)pa, PGSIZE);
+      *pte = PA2PTE((uint64)mem) | flags;
+    
+      sfence_vma();
+      kfree((void *)pa);
+    }
+    return 0;
+}
+
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
@@ -369,6 +408,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if(check_cow(va0, pagetable) < 0)
+      return -1;
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
