@@ -27,6 +27,7 @@ int ntas();
 int crash(const char*, int);
 int mount(char*, char *);
 int umount(char*);
+int symlink(const char *target, const char *path);
 
 // ulib.c
 int stat(const char*, struct stat*);
