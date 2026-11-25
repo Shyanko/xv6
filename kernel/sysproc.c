@@ -43,12 +43,26 @@ sys_sbrk(void)
 {
   int addr;
   int n;
+  struct proc *p = myproc();
+  
 
   if(argint(0, &n) < 0)
     return -1;
+
   addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
+	if(n > 0)
+	{
+		if((uint64)n >= MAXVA - p->sz)
+			return -1;
+		p->sz += n;
+	}
+	else if(n < 0)
+	{
+		if((uint64)(-(long)n) > p->sz)
+			return -1;
+		if(growproc(n) < 0)
+			return -1;
+	}
   return addr;
 }
 

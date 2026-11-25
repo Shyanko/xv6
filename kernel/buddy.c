@@ -27,7 +27,6 @@ typedef struct list Bd_list;
 struct sz_info {
   Bd_list free;
   char *alloc;
-  char *split;
 };
 typedef struct sz_info Sz_info;
 
@@ -85,10 +84,6 @@ bd_print() {
     lst_print(&bd_sizes[k].free);
     printf("  alloc:");
     bd_print_vector(bd_sizes[k].alloc, NBLK(k));
-    if(k > 0) {
-      printf("  split:");
-      bd_print_vector(bd_sizes[k].split, NBLK(k));
-    }
   }
 }
 
@@ -144,7 +139,6 @@ bd_malloc(uint64 nbytes)
     // split a block at size k and mark one half allocated at size k-1
     // and put the buddy on the free list at size k-1
     char *q = p + BLK_SIZE(k-1);   // p's buddy
-    bit_set(bd_sizes[k].split, blk_index(k, p));
     bit_set(bd_sizes[k-1].alloc, blk_index(k-1, p));
     lst_push(&bd_sizes[k-1].free, q);
   }
@@ -157,7 +151,7 @@ bd_malloc(uint64 nbytes)
 int
 size(char *p) {
   for (int k = 0; k < nsizes; k++) {
-    if(bit_isset(bd_sizes[k+1].split, blk_index(k+1, p))) {
+    if(bit_isset(bd_sizes[k].alloc, blk_index(k, p))) {
       return k;
     }
   }
@@ -185,9 +179,6 @@ bd_free(void *p) {
     if(buddy % 2 == 0) {
       p = q;
     }
-    // at size k+1, mark that the merged buddy pair isn't split
-    // anymore
-    bit_clear(bd_sizes[k+1].split, blk_index(k+1, p));
   }
   lst_push(&bd_sizes[k].free, p);
   release(&lock);
@@ -225,10 +216,6 @@ bd_mark(void *start, void *stop)
     bi = blk_index(k, start);
     bj = blk_index_next(k, stop);
     for(; bi < bj; bi++) {
-      if(k > 0) {
-        // if a block is allocated at size k, mark it as split too.
-        bit_set(bd_sizes[k].split, bi);
-      }
       bit_set(bd_sizes[k].alloc, bi);
     }
   }
@@ -322,15 +309,6 @@ bd_init(void *base, void *end) {
     memset(bd_sizes[k].alloc, 0, sz);
     p += sz;
   }
-
-  // allocate the split array for each size k, except for k = 0, since
-  // we will not split blocks of size k = 0, the smallest size.
-  for (int k = 1; k < nsizes; k++) {
-    sz = sizeof(char)* (ROUNDUP(NBLK(k), 8))/8;
-    bd_sizes[k].split = p;
-    memset(bd_sizes[k].split, 0, sz);
-    p += sz;
-  }
   p = (char *) ROUNDUP((uint64) p, LEAF_SIZE);
 
   // done allocating; mark the memory range [base, p) as allocated, so
@@ -342,6 +320,7 @@ bd_init(void *base, void *end) {
   int unavailable = bd_mark_unavailable(end, p);
   void *bd_end = bd_base+BLK_SIZE(MAXSIZE)-unavailable;
   
+	//[p,end)
   // initialize free lists for each size k
   int free = bd_initfree(p, bd_end);
 
